@@ -4,10 +4,14 @@
 #include <sys/un.h>
 #include <stdlib.h>
 #include <sys/time.h>
+#include <signal.h>
 #include <time.h>
 #include <zlib.h>
+#include <time.h>
 
 #define SOCKET_PATH "/tmp/sdumper.sock"
+
+struct gzFile_s* out_fp = NULL;
 
 void gen_filename(char* name, size_t len) {
     struct timeval tv;
@@ -27,11 +31,18 @@ int today() {
     return now_tm->tm_mday;
 }
 
+void sig_handler(int signal_num) {
+    if (out_fp != NULL) {
+        gzclose(out_fp);
+        out_fp = NULL;
+    }
+    exit(0);
+}
+
 int main(int argc, char* argv[]) {
     struct sockaddr_un addr;
-    int fd, ret, day;
+    int fd, ret, day, count = 0;
     char buf[131072];
-    struct gzFile_s* out_fp;
     char fname[256];
 
     fd = socket(PF_LOCAL, SOCK_DGRAM, 0);
@@ -54,6 +65,10 @@ int main(int argc, char* argv[]) {
 
     listen(fd, 5);
 
+    signal(SIGINT, sig_handler);
+    signal(SIGTERM, sig_handler);
+    signal(SIGQUIT, sig_handler);
+
     gen_filename(fname, 256);
     day = today();
     out_fp = gzopen(fname, "wb");
@@ -63,7 +78,7 @@ int main(int argc, char* argv[]) {
     }
 
     while (1) {
-        int ret, count = 0;
+        int ret, ret2;
 
         ret = recv(fd, buf, sizeof(buf), 0);
         if (ret == -1) {
@@ -71,12 +86,13 @@ int main(int argc, char* argv[]) {
             continue;
         }
         
-        printf("read %u bytes: %.*s\n", ret, ret, buf);
-        gzwrite(out_fp, buf, ret);
+        ret2 = gzwrite(out_fp, buf, ret);
+        printf("read %u bytes, wrote %u bytes\n", ret, ret2);
         count++;
         if (count > 100) {
             count = 0;
             if (day != today()) {
+                printf("day changed, rotating file\n");
                 gzclose(out_fp);
                 gen_filename(fname, 256);
                 day = today();
